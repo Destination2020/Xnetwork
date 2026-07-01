@@ -1,0 +1,134 @@
+# 先验条件-物理约束-误差自适应 XRR 反演网络算法流程图
+
+```mermaid
+flowchart LR
+    %% ===================== Styles =====================
+    classDef data fill:#DCEBFF,stroke:#2563EB,stroke-width:1.5px,color:#0F172A;
+    classDef prior fill:#FFE7C2,stroke:#D97706,stroke-width:1.5px,color:#0F172A;
+    classDef model fill:#E6F7DF,stroke:#16A34A,stroke-width:1.5px,color:#0F172A;
+    classDef fusion fill:#FFF1A8,stroke:#A16207,stroke-width:1.5px,color:#0F172A;
+    classDef phys fill:#EDE9FE,stroke:#7C3AED,stroke-width:1.5px,color:#0F172A;
+    classDef obs fill:#FFE4E6,stroke:#BE123C,stroke-width:1.5px,color:#0F172A;
+    classDef loss fill:#FDE2E8,stroke:#E11D48,stroke-width:1.5px,color:#0F172A;
+    classDef out fill:#DCFCE7,stroke:#15803D,stroke-width:1.5px,color:#0F172A;
+    classDef note fill:#F8FAFC,stroke:#64748B,stroke-dasharray:5 4,color:#334155;
+
+    %% ===================== Data Generation =====================
+    subgraph G["一、仿真数据生成"]
+        G1["采样待反演参数 theta<br/>9维: 厚度2 + 粗糙度3 + SLD实部2 + SLD虚部2"]:::data
+        G2["固定衬底参数<br/>real_sld_sub / imag_sld_sub"]:::note
+        G3["采样或设定实验误差参数 E_known<br/>sigma / offset / scale / background"]:::prior
+        G4["TMM正向计算<br/>R_clean = F_XRR(theta, fixed_substrate)"]:::phys
+        G5["物理显式观测层 G_eta<br/>R_obs = scale * Conv_sigma(R_clean(q + offset)) + background"]:::obs
+        G6["保存训练样本<br/>621 R_obs + 18 B_prior + 4 E_known + 9 theta_label = 652维"]:::data
+
+        G1 --> G4
+        G2 --> G4
+        G3 --> G5
+        G4 --> G5
+        G5 --> G6
+        G1 --> G6
+        G3 --> G6
+    end
+
+    %% ===================== Network Inputs =====================
+    subgraph N["二、网络输入与三路编码"]
+        N1["R_obs 621维<br/>log10 + normalize"]:::data
+        N2["B_prior 18维<br/>9个theta参数上下限"]:::prior
+        N3["E_known 4维<br/>已知实验误差参数, normalize"]:::prior
+
+        N4["E_r: 曲线编码器<br/>BiLSTM x3 + Multi-Head Attention x6<br/>输出 h_r [B,512]"]:::model
+        N5["E_b: 先验边界编码器<br/>MLP 18 -> 128<br/>输出 h_b [B,128]"]:::model
+        N6["E_eta: 误差编码器<br/>MLP 4 -> 64<br/>输出 h_eta [B,64]"]:::model
+        N7["FiLM_eta: 误差条件曲线特征调制<br/>h_eta -> gamma/beta [B,512]<br/>h_r_mod = h_r * (1 + gamma) + beta"]:::fusion
+
+        N1 --> N4
+        N2 --> N5
+        N3 --> N6
+        N4 --> N7
+        N6 --> N7
+    end
+
+    %% ===================== Inversion Head =====================
+    subgraph I["三、融合反演输出"]
+        I1["特征融合<br/>concat(h_r_mod, h_b, h_eta)<br/>512 + 128 + 64 = 704"]:::fusion
+        I2["Shared MLP Backbone"]:::model
+        I3["theta_head + sigmoid<br/>theta_norm [B,9]"]:::model
+        I4["按样本B_prior反归一化<br/>theta_hat [B,9]"]:::out
+        I5["输出参数<br/>厚度2 / 粗糙度3 / SLD实部2 / SLD虚部2<br/>不输出衬底, 不预测实验误差"]:::out
+
+        I1 --> I2 --> I3 --> I4 --> I5
+    end
+
+    N7 --> I1
+    N5 --> I1
+    N6 --> I1
+
+    %% ===================== Physics-Informed Training =====================
+    subgraph T["四、物理显式观测层约束训练"]
+        T1["theta_label [B,9]<br/>监督真值"]:::data
+        T2["L_theta<br/>SmoothL1 / L1(theta_hat, theta_label)"]:::loss
+        T3["torch批量TMM<br/>R_clean_hat = F_XRR(theta_hat, fixed_substrate)"]:::phys
+        T4["torch物理显式观测层 G_eta<br/>R_recon = scale * Conv_sigma(R_clean_hat(q + offset)) + background"]:::obs
+        T5["L_phys<br/>MSE(log10(R_recon+eps), log10(R_obs+eps))<br/>显式比较观测曲线"]:::loss
+        T6["L_constraint<br/>边界 / 粗糙度 / 非有限物理输出约束"]:::loss
+        T7["可选 L_consistency<br/>同一theta + 不同E_known<br/>要求theta_hat保持一致"]:::loss
+        T8["总损失<br/>L = L_theta + lambda_phys L_phys<br/>+ lambda_cons L_consistency + 0.1 L_constraint"]:::loss
+        T9["反向传播 + AdamW优化"]:::model
+
+        I4 --> T2
+        T1 --> T2
+        I4 --> T3
+        G2 --> T3
+        N3 --> T4
+        T3 --> T4 --> T5
+        N1 --> T5
+        I4 --> T6
+        I4 --> T7
+        T2 --> T8
+        T5 --> T8
+        T6 --> T8
+        T7 --> T8
+        T8 --> T9
+    end
+
+    %% ===================== Prediction =====================
+    subgraph P["五、推理与结果输出"]
+        P1["实验CSV / 测试样本<br/>插值或截断到621点"]:::data
+        P2["输入推理先验<br/>B_prior: 厚度/粗糙度/SLD实部/SLD虚部上下限"]:::prior
+        P3["输入真实实验误差参数<br/>E_known: sigma / offset / scale / background"]:::prior
+        P4["模型反演<br/>theta_hat [9维]"]:::out
+        P7["固定衬底SLD配置<br/>real_sld_sub / imag_sld_sub"]:::note
+        P5["显式观测层重建曲线<br/>R_clean_hat = F_XRR(theta_hat)<br/>R_recon = G_eta(R_clean_hat, E_known)"]:::obs
+        P6["输出Excel/图像<br/>参数表 + R_obs/R_clean_hat/R_recon对比"]:::out
+
+        P1 --> N1
+        P2 --> N2
+        P3 --> N3
+        I4 --> P4
+        P4 --> P5
+        P3 --> P5
+        P7 --> P5
+        P5 --> P6
+    end
+```
+
+## 关键维度
+
+```text
+训练样本总长度: 652
+
+R_obs:       621
+B_prior:     18 = theta_min(9) + theta_max(9)
+E_known:      4 = sigma_deg + angle_offset_deg + intensity_scale + background_level
+theta_label:  9 = thickness2 + roughness3 + real_sld2 + imag_sld2
+```
+
+## 核心思想
+
+- 主方案是“物理显式观测层 `G_eta` + FiLM 曲线特征调制”的混合架构。
+- `E_known` 不只是拼接输入，而是通过 `FiLM_eta` 生成曲线特征调制参数 `gamma/beta`。
+- `E_known` 还会进入物理显式观测层 `G_eta`，按 offset、resolution、scale、background 显式作用于重建曲线。
+- 网络学习理想反射率背后的薄膜参数；实验误差的确定性影响主要由 `G_eta` 负责。
+- 衬底 SLD 固定，不作为输入边界、不作为输出参数。
+- 网络只输出 9 维薄膜参数，不预测实验误差参数。

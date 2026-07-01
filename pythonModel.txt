@@ -1,0 +1,2 @@
+python FCNN_3prediction_transition.py --model_path XRR_net_dust_stage1_final_20260415_152003.pth --exp_file doublelayerT2.csv --fuzzy_real_l1 0.003422297 --fuzzy_real_l2 0.00403916 --fuzzy_real_sub 0.002005544 --fuzzy_imag_l1 0.0001726084 --fuzzy_imag_l2 0.0002069166 --fuzzy_imag_sub 0.00004567734 
+python FCNN_3prediction_transition.py --model_path XRR_net_dust_stage1_final_20260415_152003.pth --test_file "D:\Work_files\EUV-OCT\XRR\XRR_Software\DeepLearning\data\test_data\test_exp_transition_stage1\0000003.txt" 
